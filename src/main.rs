@@ -8,8 +8,8 @@ use std::process;
 
 #[derive(Parser)]
 #[command(
-    name = "circle-debug",
-    about = "Debug CircleCI build failures with smart error detection",
+    name = "cdb",
+    about = "CircleCI debugger - analyze build failures with smart error detection",
     long_about = r#"
 Debug CircleCI build failures using progressive disclosure and AI-friendly output.
 
@@ -25,20 +25,28 @@ The tool automatically saves full logs to /tmp for fallback analysis.
     after_help = r#"
 EXAMPLES:
   # Quick diagnosis (most common case)
-  CIRCLE_DEBUG_FETCH_LOGS=1 circle_debug build https://circleci.com/gh/org/repo/12345
+  cdb build https://circleci.com/gh/org/repo/12345
   
   # Full logs when error not found in summary
-  CIRCLE_DEBUG_FETCH_LOGS=1 circle_debug build --full https://circleci.com/gh/org/repo/12345
+  cdb build --full https://circleci.com/gh/org/repo/12345
   
   # Custom context window
-  CIRCLE_DEBUG_FETCH_LOGS=1 circle_debug build --tail 200 https://circleci.com/gh/org/repo/12345
+  cdb build --tail 200 https://circleci.com/gh/org/repo/12345
   
   # Save to specific file
-  CIRCLE_DEBUG_FETCH_LOGS=1 circle_debug build --output debug.log https://circleci.com/gh/org/repo/12345
+  cdb build --output debug.log https://circleci.com/gh/org/repo/12345
+  
+  # Skip log fetching (only show metadata)
+  cdb build --no-fetch https://circleci.com/gh/org/repo/12345
+  
+  # Check PR status (requires gh CLI)
+  cdb pr 123 --repo stitchfix/web-frontend
+  
+  # Check PR by URL
+  cdb pr https://github.com/stitchfix/web-frontend/pull/123
 
 ENVIRONMENT:
-  CIRCLECI_TOKEN           Your CircleCI API token (required)
-  CIRCLE_DEBUG_FETCH_LOGS  Set to fetch and analyze build logs
+  CIRCLECI_TOKEN    Your CircleCI API token (required)
 
 EXIT CODES:
   0    Success - analysis completed
@@ -81,16 +89,26 @@ enum Commands {
         /// Only show last N lines without smart detection
         #[arg(long, help = "Show only the last N lines of output")]
         tail: Option<usize>,
+        /// Skip fetching logs (only show build metadata)
+        #[arg(long, help = "Skip fetching and analyzing logs")]
+        no_fetch: bool,
     },
     /// Get workflow details
     Workflow {
         /// Pipeline ID
         pipeline_id: String,
     },
-    /// Check PR status
+    /// Check PR status and CircleCI checks
+    /// 
+    /// Shows all CircleCI checks for a GitHub PR.
+    /// Requires GitHub CLI (gh) to be installed and authenticated.
     Pr {
-        /// GitHub PR number
-        pr_number: u32,
+        /// GitHub PR number or URL
+        #[arg(help = "PR number (e.g., 123) or URL (e.g., https://github.com/org/repo/pull/123)")]
+        pr: String,
+        /// Repository in format org/repo (defaults to current repo)
+        #[arg(long, short = 'r', help = "Repository (e.g., stitchfix/web-frontend)")]
+        repo: Option<String>,
     },
 }
 
@@ -207,7 +225,7 @@ fn print_info(text: &str) {
     println!("{} {}", "→".yellow(), text);
 }
 
-async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, tail_lines: Option<usize>) -> Result<()> {
+async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, tail_lines: Option<usize>, no_fetch: bool) -> Result<()> {
     print_header("Analyzing CircleCI Build");
     
     let (org, project, build_num) = parse_circleci_url(url)?;
@@ -254,7 +272,7 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                     print_error(&format!("  {}", action.name));
                     
                     if let Some(output_url) = &action.output_url {
-                        if env::var("CIRCLE_DEBUG_FETCH_LOGS").is_ok() {
+                        if !no_fetch {
                             println!("\n  {}", "Fetching logs...".dimmed());
                             match client.get_logs(output_url).await {
                                 Ok(logs) => {
@@ -263,7 +281,7 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                     let clean_logs = ansi_re.replace_all(&logs, "");
                                     
                                     // Always save to temp file for fallback
-                                    let auto_save_path = format!("/tmp/circle-debug-{}.log", build_num);
+                                    let auto_save_path = format!("/tmp/cdb-{}.log", build_num);
                                     std::fs::write(&auto_save_path, clean_logs.as_ref())?;
                                     println!("\n  {}", format!("Auto-saved full logs to: {}", auto_save_path).dimmed());
                                     
@@ -369,11 +387,8 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                 Err(e) => print_error(&format!("  Failed to fetch logs: {}", e)),
                             }
                         } else {
-                            println!("\n  {}", "=== LOG FETCHING DISABLED ===".yellow().bold());
-                            println!("  To fetch and analyze logs, set environment variable:");
-                            println!("  {}", "export CIRCLE_DEBUG_FETCH_LOGS=1".cyan());
-                            println!();
-                            println!("  Or view logs directly at:");
+                            println!("\n  {}", "=== LOG FETCHING SKIPPED ===".yellow().bold());
+                            println!("  View logs directly at:");
                             println!("  {}", output_url.blue().underline());
                         }
                     }
@@ -392,23 +407,158 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
     Ok(())
 }
 
+async fn analyze_pr(pr_input: &str, repo: Option<String>) -> Result<()> {
+    print_header("Analyzing GitHub PR");
+    
+    // Parse PR number from URL or use directly
+    let pr_number = if pr_input.contains("github.com") {
+        // Extract from URL like https://github.com/org/repo/pull/123
+        pr_input.split('/').last()
+            .context("Invalid PR URL")?
+            .to_string()
+    } else {
+        pr_input.to_string()
+    };
+    
+    print_info(&format!("PR Number: {}", pr_number));
+    
+    // Determine repository
+    let repository = if let Some(r) = repo {
+        r
+    } else {
+        // Try to get from current directory using gh
+        let output = std::process::Command::new("gh")
+            .args(&["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output();
+        
+        match output {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            Err(_) => {
+                bail!("Could not determine repository. Please specify with --repo org/repo");
+            }
+        }
+    };
+    
+    if repository.is_empty() {
+        bail!("Could not determine repository. Please specify with --repo org/repo");
+    }
+    
+    print_info(&format!("Repository: {}", repository));
+    
+    // Get PR checks using gh CLI
+    println!("\n{}", "Fetching PR status checks...".dimmed());
+    
+    let checks_output = std::process::Command::new("gh")
+        .args(&["pr", "checks", &pr_number, "--repo", &repository])
+        .output()
+        .context("Failed to run 'gh pr checks'. Is GitHub CLI installed and authenticated?")?;
+    
+    // gh pr checks returns non-zero when there are failed checks, but still outputs data
+    let checks = if !checks_output.stdout.is_empty() {
+        String::from_utf8_lossy(&checks_output.stdout)
+    } else if !checks_output.stderr.is_empty() {
+        // Sometimes gh outputs to stderr even on success
+        String::from_utf8_lossy(&checks_output.stderr)
+    } else {
+        bail!("No output from gh pr checks command");
+    };
+    
+    print_header("PR Status Checks");
+    
+    // Parse and display CircleCI-specific checks
+    let mut circleci_checks = Vec::new();
+    let mut failed_checks = Vec::new();
+    
+    for line in checks.lines() {
+        if line.contains("circleci") || line.contains("CircleCI") {
+            circleci_checks.push(line);
+            if line.contains("fail") || line.contains("✗") {
+                failed_checks.push(line);
+            }
+        }
+    }
+    
+    if circleci_checks.is_empty() {
+        println!("{}", "No CircleCI checks found on this PR".yellow());
+        println!("\nAll checks:");
+        println!("{}", checks);
+    } else {
+        println!("Found {} CircleCI check(s):", circleci_checks.len());
+        println!();
+        
+        for check in &circleci_checks {
+            if check.contains("fail") || check.contains("✗") {
+                println!("{}", check.red());
+            } else if check.contains("pass") || check.contains("✓") {
+                println!("{}", check.green());
+            } else if check.contains("pending") || check.contains("○") {
+                println!("{}", check.yellow());
+            } else {
+                println!("{}", check);
+            }
+        }
+        
+        if !failed_checks.is_empty() {
+            print_header("Failed CircleCI Checks");
+            println!("{}", "Extract URLs from failed checks to debug:".cyan());
+            
+            // Try to extract CircleCI URLs from the output
+            let url_regex = Regex::new(r"https://circleci\.com/gh/[^\s]+/\d+")?;
+            for check in &failed_checks {
+                if let Some(url_match) = url_regex.find(check) {
+                    let url = url_match.as_str();
+                    println!("\n{} {}", "•".red(), check.split('\t').next().unwrap_or("Unknown check").red());
+                    println!("  Debug with: {}", format!("cdb build {}", url).cyan());
+                }
+            }
+        }
+    }
+    
+    // Also show PR details
+    println!();
+    print_header("PR Details");
+    
+    let pr_details = std::process::Command::new("gh")
+        .args(&["pr", "view", &pr_number, "--repo", &repository, "--json", "state,title,author,url"])
+        .output();
+    
+    if let Ok(output) = pr_details {
+        if output.status.success() {
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            
+            if let Some(title) = json.get("title").and_then(|v| v.as_str()) {
+                print_info(&format!("Title: {}", title));
+            }
+            if let Some(state) = json.get("state").and_then(|v| v.as_str()) {
+                print_info(&format!("State: {}", state));
+            }
+            if let Some(author) = json.get("author").and_then(|v| v.get("login")).and_then(|v| v.as_str()) {
+                print_info(&format!("Author: {}", author));
+            }
+            if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                print_info(&format!("URL: {}", url.blue().underline()));
+            }
+        }
+    }
+    
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Build { url, full, output, tail } => {
-            analyze_build(&url, full, output, tail).await?;
+        Commands::Build { url, full, output, tail, no_fetch } => {
+            analyze_build(&url, full, output, tail, no_fetch).await?;
         },
         Commands::Workflow { pipeline_id } => {
             print_info(&format!("Fetching workflow for pipeline: {}", pipeline_id));
             // TODO: Implement workflow fetching
             println!("Workflow analysis not yet implemented");
         },
-        Commands::Pr { pr_number } => {
-            print_info(&format!("Checking PR #{}", pr_number));
-            // TODO: Implement GitHub PR integration
-            println!("PR status check not yet implemented");
+        Commands::Pr { pr, repo } => {
+            analyze_pr(&pr, repo).await?;
         },
     }
     

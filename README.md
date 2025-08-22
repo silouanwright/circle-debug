@@ -1,4 +1,4 @@
-# circle-debug 🔍
+# cdb - CircleCI Debugger 🔍
 
 A Rust CLI tool for quickly debugging CircleCI build failures directly from your terminal.
 
@@ -7,7 +7,8 @@ A Rust CLI tool for quickly debugging CircleCI build failures directly from your
 ✅ **Parse CircleCI URLs** - Extract build information from standard CircleCI URLs  
 ✅ **Fetch build details** - Get comprehensive build status and failure information  
 ✅ **Identify failed steps** - Automatically highlight which steps failed and why  
-✅ **Display failure logs** - Optionally fetch and display the last 20 lines of failed step logs  
+✅ **Display failure logs** - Automatically fetches and analyzes build logs with smart error detection  
+✅ **Progressive disclosure** - Shows smart summary + last 50 lines by default, with --full option for complete logs  
 ✅ **Beautiful output** - Color-coded terminal output for easy scanning  
 ✅ **Quick actions** - Generate links for reruns and artifact viewing  
 
@@ -37,18 +38,26 @@ Get your token from: https://app.circleci.com/settings/user/tokens
 
 ### Basic Usage
 
-Analyze a failed build from URL:
+Analyze a failed build (automatically fetches and analyzes logs):
 
 ```bash
-circle-debug build https://circleci.com/gh/stitchfix/web-frontend/156093
+cdb build https://circleci.com/gh/stitchfix/web-frontend/156093
 ```
 
-### With Log Fetching
-
-To also fetch and display the last 20 lines of failed step logs:
+### Additional Options
 
 ```bash
-CIRCLE_DEBUG_FETCH_LOGS=1 circle-debug build https://circleci.com/gh/stitchfix/web-frontend/156093
+# Show complete logs when error not found in summary
+cdb build --full https://circleci.com/gh/stitchfix/web-frontend/156093
+
+# Show only last N lines
+cdb build --tail 100 https://circleci.com/gh/stitchfix/web-frontend/156093
+
+# Skip log fetching (only show metadata)
+cdb build --no-fetch https://circleci.com/gh/stitchfix/web-frontend/156093
+
+# Check PR status and CircleCI checks
+cdb pr 123 --repo stitchfix/web-frontend
 ```
 
 ### Example Output
@@ -82,9 +91,9 @@ Quick Actions
 
 ## Commands
 
-- `circle-debug build <url>` - Analyze a specific build
-- `circle-debug workflow <pipeline-id>` - Get workflow details (coming soon)
-- `circle-debug pr <pr-number>` - Check PR status (coming soon)
+- `cdb build <url>` - Analyze a specific build with smart error detection
+- `cdb pr <pr-number>` - Check PR status and CircleCI checks
+- `cdb workflow <pipeline-id>` - Get workflow details (coming soon)
 
 ## Why Rust?
 
@@ -111,7 +120,9 @@ cargo clippy
 
 ## Roadmap
 
-- [ ] GitHub PR integration
+- [x] GitHub PR integration
+- [x] Smart error detection
+- [x] Progressive log disclosure
 - [ ] Workflow analysis
 - [ ] Config validation
 - [ ] Artifact downloading

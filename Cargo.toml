@@ -3,6 +3,11 @@ name = "circle_debug"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "cdb"
+path = "src/main.rs"
+
+
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
 reqwest = { version = "0.12", features = ["json"] }
