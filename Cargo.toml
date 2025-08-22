@@ -1,7 +1,16 @@
 [package]
-name = "circle_debug"
+name = "circle-debug"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Silouan Wright <silouan.wright@example.com>"]
+description = "A CLI tool for quickly debugging CircleCI build failures with smart error detection and contextual suggestions"
+documentation = "https://docs.rs/circle-debug"
+homepage = "https://github.com/silouanwright/circle-debug"
+repository = "https://github.com/silouanwright/circle-debug"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["circleci", "ci", "debugging", "cli", "devtools"]
+categories = ["command-line-utilities", "development-tools::debugging"]
 
 [[bin]]
 name = "cdb"
