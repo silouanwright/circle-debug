@@ -41,23 +41,23 @@ Get your token from: https://app.circleci.com/settings/user/tokens
 Analyze a failed build (automatically fetches and analyzes logs):
 
 ```bash
-cdb build https://circleci.com/gh/stitchfix/web-frontend/156093
+cdb build https://circleci.com/gh/org/repo/12345
 ```
 
 ### Additional Options
 
 ```bash
 # Show complete logs when error not found in summary
-cdb build --full https://circleci.com/gh/stitchfix/web-frontend/156093
+cdb build --full https://circleci.com/gh/org/repo/12345
 
 # Show only last N lines
-cdb build --tail 100 https://circleci.com/gh/stitchfix/web-frontend/156093
+cdb build --tail 100 https://circleci.com/gh/org/repo/12345
 
 # Skip log fetching (only show metadata)
-cdb build --no-fetch https://circleci.com/gh/stitchfix/web-frontend/156093
+cdb build --no-fetch https://circleci.com/gh/org/repo/12345
 
 # Check PR status and CircleCI checks
-cdb pr 123 --repo stitchfix/web-frontend
+cdb pr 123 --repo org/repo
 ```
 
 ### Example Output
@@ -65,9 +65,9 @@ cdb pr 123 --repo stitchfix/web-frontend
 ```
 Analyzing CircleCI Build
 ========================
-→ Organization: stitchfix
-→ Project: web-frontend
-→ Build Number: 156093
+→ Organization: org
+→ Project: repo  
+→ Build Number: 12345
 
 Build Summary
 =============
@@ -80,13 +80,13 @@ Failed Steps
 
 ▸ Run tests
   ✗ npm test
-  → Log URL: https://circle-artifacts.com/...
+  [Module Resolution] Failed to resolve package...
 
 Quick Actions
 =============
-• Rerun: https://circleci.com/gh/stitchfix/web-frontend/156093/retry
+• Rerun: https://circleci.com/gh/org/repo/12345/retry
 • SSH Debug: Click 'Rerun' → 'Rerun job with SSH' in CircleCI UI
-• View artifacts: https://circleci.com/gh/stitchfix/web-frontend/156093/artifacts
+• View artifacts: https://circleci.com/gh/org/repo/12345/artifacts
 ```
 
 ## Commands
