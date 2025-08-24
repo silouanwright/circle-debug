@@ -14,16 +14,27 @@ Then `cdb` is for you! It's designed for developers who want to quickly diagnose
 
 ## Features
 
-✅ **Parse CircleCI URLs** - Extract build information from standard CircleCI URLs  
-✅ **Fetch build details** - Get comprehensive build status and failure information  
-✅ **Identify failed steps** - Automatically highlight which steps failed and why  
-✅ **Display failure logs** - Automatically fetches and analyzes build logs with smart error detection  
-✅ **Progressive disclosure** - Shows smart summary + last 50 lines by default, with --full option for complete logs  
-✅ **Contextual suggestions** - Provides fix suggestions based on error type (e.g., "Check file case sensitivity" for README errors)  
-✅ **Filter logs** - Focus on specific packages or tasks with `--filter` option  
-✅ **Timing analysis** - Shows slowest steps and identifies performance bottlenecks  
-✅ **Beautiful output** - Color-coded terminal output with error highlighting  
-✅ **Quick actions** - Generate links for reruns and artifact viewing  
+### 🎯 Smart Error Detection
+- **Pattern matching** for common CI failures (TypeScript, tests, dependencies, etc.)
+- **Contextual fix suggestions** based on error type
+- **Progressive disclosure**: Smart summary → Last 50 lines → Full logs
+- **Automatic log caching** to `/tmp` for quick re-analysis
+
+### 🔍 Auto-Detection 
+- **Current PR detection** - No need to find PR numbers
+- **Repository detection** - Works in any git repo with GitHub remote
+- **Failed check extraction** - Automatically finds CircleCI URLs from PR checks
+
+### ⚡ Performance Analysis
+- **Timing breakdown** - See how long each step takes
+- **Bottleneck detection** - Identifies steps taking >50% of build time
+- **Sorted by duration** - Quickly spot the slowest operations
+
+### 🎨 Beautiful Output
+- **Color-coded** - Red for errors, yellow for warnings, green for success
+- **Error highlighting** - Failed lines have special background highlighting
+- **Clean formatting** - Strips ANSI codes when saving to files
+- **Line numbers** - Easy to reference specific log locations  
 
 ## Installation
 
@@ -50,32 +61,64 @@ cargo install --path .
   gh auth login
   ```
 
+## Quick Start
+
+```bash
+# 1. Set your CircleCI token
+export CIRCLECI_TOKEN="your-circleci-personal-token"
+
+# 2. Check your current PR's CI status (auto-detects everything!)
+cdb pr
+
+# 3. Debug any failed builds
+cdb build https://circleci.com/gh/org/repo/12345
+```
+
+That's it! No complex setup required.
+
 ## Setup
 
-Set your CircleCI API token:
+Get your CircleCI token from: https://app.circleci.com/settings/user/tokens
 
+Add to your shell config (`~/.bashrc`, `~/.zshrc`, etc.):
 ```bash
 export CIRCLECI_TOKEN="your-circleci-personal-token"
 ```
 
-Get your token from: https://app.circleci.com/settings/user/tokens
-
 ## Usage
 
-### Basic Usage
+### Basic Commands
 
-Analyze a failed build (automatically fetches and analyzes logs):
-
+#### Analyze a failed build
 ```bash
+# Analyze a CircleCI build URL (smart error detection + last 50 lines)
 cdb build https://circleci.com/gh/org/repo/12345
-```
 
-### Additional Options
-
-```bash
 # Show complete logs when error not found in summary
 cdb build --full https://circleci.com/gh/org/repo/12345
 
+# Save logs to a specific file
+cdb build --output debug.log https://circleci.com/gh/org/repo/12345
+```
+
+#### Check PR status
+```bash
+# Auto-detect current PR and repository
+cdb pr
+
+# Specify PR number, auto-detect repository  
+cdb pr 123
+
+# Use PR URL
+cdb pr https://github.com/org/repo/pull/123
+
+# Specify everything explicitly
+cdb pr 123 --repo org/repo
+```
+
+### Advanced Options
+
+```bash
 # Show only last N lines
 cdb build --tail 100 https://circleci.com/gh/org/repo/12345
 
@@ -84,78 +127,43 @@ cdb build --filter "@stitch-fix/graphql-api-provider" https://circleci.com/gh/or
 
 # Skip log fetching (only show metadata)
 cdb build --no-fetch https://circleci.com/gh/org/repo/12345
-
-# Check PR status and CircleCI checks
-cdb pr 123 --repo org/repo
-
-# Auto-detect current PR and repo
-cdb pr
 ```
 
-### Auto-Detection
+### Auto-Detection Magic ✨
 
-`cdb` can automatically detect your current PR and repository:
+`cdb pr` automatically detects:
+- **Current PR**: Uses `gh` to find the PR for your current branch
+- **Current Repository**: Uses `gh` to detect the repo you're in
 
-```bash
-# Auto-detect both PR and repository from current branch
-cdb pr
-
-# Auto-detect repository, specify PR
-cdb pr 123
-
-# Specify both explicitly
-cdb pr 123 --repo org/repo
-```
-
-### Finding Your Current PR Manually
-
-When working on a feature branch, you often need to find the PR number for use with `cdb`. Here are several ways to determine your current PR:
-
-```bash
-# Method 1: Use GitHub CLI to view current PR
-gh pr view
-# Shows PR details including the PR number
-
-# Method 2: Get just the PR number
-gh pr view --json number -q .number
-
-# Method 3: Open PR in browser (shows URL with PR number)
-gh pr view --web
-
-# Method 4: List all PRs for current branch
-gh pr list --head $(git branch --show-current)
-```
+No need to manually find PR numbers or repository names!
 
 ### Common Workflow Examples
 
-#### Debug CI failures for current PR
+#### Quick PR debugging (most common)
 ```bash
-# Get current PR number and check its CI status
-PR=$(gh pr view --json number -q .number)
-cdb pr $PR --repo org/repo
-
-# Or combine in one line
-cdb pr $(gh pr view --json number -q .number) --repo org/repo
+# Just run this from your feature branch - everything is auto-detected!
+cdb pr
 ```
 
 #### Debug a specific failing check
 ```bash
-# First, view the PR to see failing checks
-gh pr view
+# 1. Check your PR status
+cdb pr
 
-# Then use the CircleCI URL from the failing check
+# 2. Copy the CircleCI URL from any failed check and analyze it
 cdb build https://circleci.com/gh/org/repo/12345
 ```
 
-#### Create an alias for quick PR debugging
-Add to your shell config (`.bashrc`, `.zshrc`, etc.):
+#### Progressive debugging workflow
 ```bash
-alias cdb-pr='cdb pr $(gh pr view --json number -q .number) --repo $(gh repo view --json nameWithOwner -q .nameWithOwner)'
-```
+# 1. Start with smart summary (default)
+cdb build https://circleci.com/gh/org/repo/12345
 
-Then simply run:
-```bash
-cdb-pr  # Automatically uses current PR and repo
+# 2. If error not visible, show full logs
+cdb build --full https://circleci.com/gh/org/repo/12345
+
+# 3. Or filter to specific package if you know where the error is
+cdb build --filter "@mypackage" https://circleci.com/gh/org/repo/12345
 ```
 
 ### Example Output
@@ -201,8 +209,24 @@ Filter '@stitch-fix/graphql-api-provider': 127 of 2341 lines
 
 ## Commands
 
-- `cdb build <url>` - Analyze a specific build with smart error detection
-- `cdb pr <pr-number>` - Check PR status and CircleCI checks
+### `cdb build <url>` - Analyze CircleCI builds
+Fetches and analyzes CircleCI build logs with smart error detection.
+
+**Options:**
+- `--full, -f` - Show complete logs instead of smart summary
+- `--output, -o <file>` - Save logs to file (auto-saves to `/tmp/cdb-<build>.log`)
+- `--tail <lines>` - Show only last N lines
+- `--filter <text>` - Filter logs to lines containing text
+- `--no-fetch` - Skip log fetching, only show build metadata
+
+### `cdb pr [pr-number]` - Check PR status
+Shows all CircleCI checks for a GitHub PR.
+
+**Arguments:**
+- `pr-number` - Optional PR number or URL (auto-detects if omitted)
+- `--repo, -r <org/repo>` - Repository (auto-detects if omitted)
+
+**Note:** Requires GitHub CLI (`gh`) installed and authenticated
 
 ## Why Rust?
 
