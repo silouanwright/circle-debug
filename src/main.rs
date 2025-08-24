@@ -60,11 +60,11 @@
 //!
 //! All logs are automatically cached to `/tmp` for faster re-analysis.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use circle_debug::{format_duration, parse_circleci_url, CircleClient};
 use clap::{Parser, Subcommand};
 use colored::*;
 use regex::Regex;
-use circle_debug::{CircleClient, parse_circleci_url, format_duration};
 
 /// Command-line interface for the CircleCI debugger.
 ///
@@ -82,7 +82,7 @@ use circle_debug::{CircleClient, parse_circleci_url, format_duration};
 #[derive(Parser)]
 #[command(
     name = "cdb",
-    about = "CircleCI debugger - analyze build failures with smart error detection",
+    about = "Smart CircleCI build analyzer - auto-detects errors, suggests fixes, tracks performance",
     long_about = r#"
 Debug CircleCI build failures using progressive disclosure and AI-friendly output.
 
@@ -114,17 +114,24 @@ EXAMPLES:
   # Save to specific file
   cdb build --output debug.log https://circleci.com/gh/org/repo/12345
   
-  # Skip log fetching (only show metadata)
-  cdb build --no-fetch https://circleci.com/gh/org/repo/12345
+  # Check current PR (auto-detects PR and repo - requires gh CLI)
+  cdb pr
   
-  # Check PR status (requires gh CLI)
-  cdb pr 123 --repo org/repo
+  # Check specific PR (auto-detects repo)
+  cdb pr 123
   
   # Check PR by URL
   cdb pr https://github.com/org/repo/pull/123
 
 ENVIRONMENT:
   CIRCLECI_TOKEN    Your CircleCI API token (required)
+
+AUTO-DETECTION:
+  The 'pr' command auto-detects:
+  • Current PR number from your branch (via gh CLI)
+  • Repository from current directory (via gh CLI)
+  
+  Just run 'cdb pr' from your feature branch!
 
 EXIT CODES:
   0    Success - analysis completed
@@ -149,12 +156,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Analyze a failed build from URL (use --help for full options)
-    /// 
+    ///
     /// DEFAULT BEHAVIOR:
     /// 1. Shows smart error detection (known error patterns)
     /// 2. Shows last 50 lines of output (where errors usually are)
     /// 3. If error not found, use --full to see complete logs
-    /// 
+    ///
     /// PROGRESSIVE DEBUGGING:
     /// - First run: See smart summary + last 50 lines
     /// - If error not visible: Add --full to see everything
@@ -163,10 +170,18 @@ enum Commands {
         /// CircleCI build URL (e.g., `https://circleci.com/gh/org/repo/12345`)
         url: String,
         /// Show full logs instead of summary (use when error not found in default view)
-        #[arg(long, short = 'f', help = "Show complete logs when default summary doesn't show the error")]
+        #[arg(
+            long,
+            short = 'f',
+            help = "Show complete logs when default summary doesn't show the error"
+        )]
         full: bool,
         /// Save logs to file for further analysis
-        #[arg(long, short = 'o', help = "Save clean logs to file (automatic: /tmp/cdb-<build>.log)")]
+        #[arg(
+            long,
+            short = 'o',
+            help = "Save clean logs to file (automatic: /tmp/cdb-<build>.log)"
+        )]
         output: Option<String>,
         /// Only show last N lines without smart detection
         #[arg(long, help = "Show only the last N lines of output")]
@@ -179,22 +194,27 @@ enum Commands {
         no_fetch: bool,
     },
     /// Check PR status and CircleCI checks (use --help for full options)
-    /// 
+    ///
     /// Shows all CircleCI checks for a GitHub PR.
-    /// 
+    ///
     /// REQUIRES: GitHub CLI (gh) must be installed and authenticated.
     /// Install with: brew install gh (macOS) or https://cli.github.com/
     /// Then run: gh auth login
     Pr {
         /// GitHub PR number or URL (optional - auto-detects current PR if not specified)
-        #[arg(help = "PR number (e.g., 123) or URL (e.g., https://github.com/org/repo/pull/123) - omit to use current branch's PR")]
+        #[arg(
+            help = "PR number (e.g., 123) or URL (e.g., https://github.com/org/repo/pull/123) - omit to use current branch's PR"
+        )]
         pr: Option<String>,
         /// Repository in format org/repo (defaults to current repo)
-        #[arg(long, short = 'r', help = "Repository (e.g., org/repo) - auto-detects if not specified")]
+        #[arg(
+            long,
+            short = 'r',
+            help = "Repository (e.g., org/repo) - auto-detects if not specified"
+        )]
         repo: Option<String>,
     },
 }
-
 
 /// Prints a formatted section header to the terminal.
 ///
@@ -275,7 +295,6 @@ fn print_info(text: &str) {
     println!("{} {}", "→".yellow(), text);
 }
 
-
 /// Analyzes a CircleCI build and displays detailed failure information.
 ///
 /// This is the main analysis function that fetches build details, identifies
@@ -347,52 +366,64 @@ fn print_info(text: &str) {
 /// * [`parse_circleci_url`] - Parses the build URL
 /// * [`CircleClient`] - Handles API communication
 /// * [`format_duration`] - Formats timing information
-async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, tail_lines: Option<usize>, filter: Option<String>, no_fetch: bool) -> Result<()> {
+async fn analyze_build(
+    url: &str,
+    full_logs: bool,
+    output_file: Option<String>,
+    tail_lines: Option<usize>,
+    filter: Option<String>,
+    no_fetch: bool,
+) -> Result<()> {
     print_header("Analyzing CircleCI Build");
-    
+
     let (org, project, build_num) = parse_circleci_url(url)?;
     print_info(&format!("Organization: {}", org));
     print_info(&format!("Project: {}", project));
     print_info(&format!("Build Number: {}", build_num));
-    
+
     let client = CircleClient::new()?;
-    
+
     println!("\n{}", "Fetching build details...".dimmed());
     let build = client.get_build(&org, &project, build_num).await?;
-    
+
     print_header("Build Summary");
-    print_info(&format!("Status: {}", 
-        if build.status == "failed" { 
-            build.status.red().to_string() 
-        } else { 
-            build.status.green().to_string() 
+    print_info(&format!(
+        "Status: {}",
+        if build.status == "failed" {
+            build.status.red().to_string()
+        } else {
+            build.status.green().to_string()
         }
     ));
-    
+
     if let Some(branch) = &build.branch {
         print_info(&format!("Branch: {}", branch));
     }
-    
+
     if let Some(subject) = &build.subject {
         print_info(&format!("Commit: {}", subject));
     }
-    
-    let failed_steps: Vec<_> = build.steps.iter()
+
+    let failed_steps: Vec<_> = build
+        .steps
+        .iter()
         .filter(|step| {
-            step.actions.iter().any(|action| action.failed.unwrap_or(false))
+            step.actions
+                .iter()
+                .any(|action| action.failed.unwrap_or(false))
         })
         .collect();
-    
+
     if !failed_steps.is_empty() {
         print_header("Failed Steps");
-        
+
         for step in failed_steps {
             println!("\n{} {}", "▸".red().bold(), step.name.bold());
-            
+
             for action in &step.actions {
                 if action.failed.unwrap_or(false) {
                     print_error(&format!("  {}", action.name));
-                    
+
                     if let Some(output_url) = &action.output_url {
                         if !no_fetch {
                             println!("\n  {}", "Fetching logs...".dimmed());
@@ -401,18 +432,25 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                     // Strip ANSI escape codes
                                     let ansi_re = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
                                     let clean_logs = ansi_re.replace_all(&logs, "");
-                                    
+
                                     // Always save to temp file for fallback
                                     let auto_save_path = format!("/tmp/cdb-{}.log", build_num);
                                     std::fs::write(&auto_save_path, clean_logs.as_ref())?;
-                                    println!("\n  {}", format!("Auto-saved full logs to: {}", auto_save_path).dimmed());
-                                    
+                                    println!(
+                                        "\n  {}",
+                                        format!("Auto-saved full logs to: {}", auto_save_path)
+                                            .dimmed()
+                                    );
+
                                     // Save to custom file if requested
                                     if let Some(ref output_path) = output_file {
                                         std::fs::write(output_path, clean_logs.as_ref())?;
-                                        println!("  {}", format!("Logs also saved to: {}", output_path).green());
+                                        println!(
+                                            "  {}",
+                                            format!("Logs also saved to: {}", output_path).green()
+                                        );
                                     }
-                                    
+
                                     // Apply filter if specified
                                     let filtered_logs = if let Some(ref filter_text) = filter {
                                         let filtered: String = clean_logs
@@ -420,50 +458,91 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                             .filter(|line| line.contains(filter_text))
                                             .collect::<Vec<_>>()
                                             .join("\n");
-                                        
+
                                         if filtered.is_empty() {
-                                            println!("  {}", format!("No lines matching filter: '{}'", filter_text).yellow());
+                                            println!(
+                                                "  {}",
+                                                format!(
+                                                    "No lines matching filter: '{}'",
+                                                    filter_text
+                                                )
+                                                .yellow()
+                                            );
                                             clean_logs.clone()
                                         } else {
                                             let original_lines = clean_logs.lines().count();
                                             let filtered_lines = filtered.lines().count();
-                                            println!("  {}", format!("Filter '{}': {} of {} lines", filter_text, filtered_lines, original_lines).cyan());
+                                            println!(
+                                                "  {}",
+                                                format!(
+                                                    "Filter '{}': {} of {} lines",
+                                                    filter_text, filtered_lines, original_lines
+                                                )
+                                                .cyan()
+                                            );
                                             filtered.into()
                                         }
                                     } else {
                                         clean_logs.clone()
                                     };
-                                    
+
                                     let total_lines = filtered_logs.lines().count();
-                                    println!("  {}", format!("Total: {} lines, {} KB", total_lines, logs.len() / 1024).dimmed());
-                                    
+                                    println!(
+                                        "  {}",
+                                        format!(
+                                            "Total: {} lines, {} KB",
+                                            total_lines,
+                                            logs.len() / 1024
+                                        )
+                                        .dimmed()
+                                    );
+
                                     if full_logs {
                                         // Show full logs
-                                        println!("\n  {}", "=== FULL LOG OUTPUT ===".yellow().bold());
+                                        println!(
+                                            "\n  {}",
+                                            "=== FULL LOG OUTPUT ===".yellow().bold()
+                                        );
                                         println!("{}", filtered_logs);
                                     } else if let Some(n) = tail_lines {
                                         // Show only last N lines
                                         let lines: Vec<_> = filtered_logs.lines().collect();
-                                        let start = if lines.len() > n { lines.len() - n } else { 0 };
-                                        println!("\n  {}", format!("=== LAST {} LINES ===", n).yellow().bold());
+                                        let start =
+                                            if lines.len() > n { lines.len() - n } else { 0 };
+                                        println!(
+                                            "\n  {}",
+                                            format!("=== LAST {} LINES ===", n).yellow().bold()
+                                        );
                                         for line in lines.iter().skip(start) {
                                             println!("{}", line);
                                         }
                                     } else {
                                         // DEFAULT: Smart detection + last 50 lines
-                                        println!("\n  {}", "=== SMART ERROR DETECTION ===".blue().bold());
-                                        
+                                        println!(
+                                            "\n  {}",
+                                            "=== SMART ERROR DETECTION ===".blue().bold()
+                                        );
+
                                         // Find known error patterns
                                         let error_patterns = vec![
                                             // High confidence - specific errors
-                                            (r"(?i)\[commonjs--resolver\].*failed to resolve", "Module Resolution"),
+                                            (
+                                                r"(?i)\[commonjs--resolver\].*failed to resolve",
+                                                "Module Resolution",
+                                            ),
                                             (r"(?i)cannot find module", "Missing Module"),
-                                            (r"(?i)ENOENT:.*no such file or directory", "File Not Found"),
+                                            (
+                                                r"(?i)ENOENT:.*no such file or directory",
+                                                "File Not Found",
+                                            ),
                                             (r"(?i)syntaxerror:", "Syntax Error"),
                                             (r"(?i)typeerror:", "Type Error"),
                                             (r"(?i)referenceerror:", "Reference Error"),
                                             (r"(?i)segmentation fault", "Segfault"),
-                                            (r"(?i)(oom|out of memory|memory limit)", "Out of Memory"),
+                                            (
+                                                r"(?i)(oom|out of memory|memory limit)",
+                                                "Out of Memory",
+                                            ),
                                             // Build & compilation
                                             (r"(?i)build failed", "Build Failure"),
                                             (r"(?i)compilation failed", "Compilation Error"),
@@ -472,23 +551,35 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                             // Test failures
                                             (r"(?i)test.*failed", "Test Failure"),
                                             (r"(?i)assertion.*failed", "Assertion Failure"),
-                                            (r"(?i)\d+ (test|tests|spec|specs) failed", "Test Suite Failure"),
+                                            (
+                                                r"(?i)\d+ (test|tests|spec|specs) failed",
+                                                "Test Suite Failure",
+                                            ),
                                             // Package & dependency
                                             (r"(?i)npm err!", "NPM Error"),
                                             (r"(?i)yarn error", "Yarn Error"),
                                             (r"(?i)dependency.*not found", "Missing Dependency"),
                                             // Exit indicators
-                                            (r"(?i)exited with (code|status) [1-9]", "Non-zero Exit"),
+                                            (
+                                                r"(?i)exited with (code|status) [1-9]",
+                                                "Non-zero Exit",
+                                            ),
                                             (r"(?i)command failed", "Command Failure"),
                                         ];
-                                        
+
                                         let mut found_errors = Vec::new();
                                         let mut error_line_numbers = Vec::new();
                                         for (pattern, category) in error_patterns {
                                             let re = Regex::new(pattern).unwrap();
-                                            for (line_num, line) in filtered_logs.lines().enumerate() {
+                                            for (line_num, line) in
+                                                filtered_logs.lines().enumerate()
+                                            {
                                                 if re.is_match(line) {
-                                                    found_errors.push((category, line, line_num + 1));
+                                                    found_errors.push((
+                                                        category,
+                                                        line,
+                                                        line_num + 1,
+                                                    ));
                                                     error_line_numbers.push(line_num + 1);
                                                     if found_errors.len() >= 5 {
                                                         break;
@@ -499,92 +590,139 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
                                                 break;
                                             }
                                         }
-                                        
+
                                         if !found_errors.is_empty() {
-                                            println!("  Found {} error pattern(s):", found_errors.len());
-                                            for (category, line, line_num) in found_errors.iter().take(5) {
+                                            println!(
+                                                "  Found {} error pattern(s):",
+                                                found_errors.len()
+                                            );
+                                            for (category, line, line_num) in
+                                                found_errors.iter().take(5)
+                                            {
                                                 // Highlight with background color for better visibility
-                                                println!("  {} {} {}", 
-                                                    format!("[{}]", category).red().bold(), 
-                                                    format!("Line {}:", line_num).bright_red().bold(),
-                                                    line.trim().on_red().white().bold());
-                                                
+                                                println!(
+                                                    "  {} {} {}",
+                                                    format!("[{}]", category).red().bold(),
+                                                    format!("Line {}:", line_num)
+                                                        .bright_red()
+                                                        .bold(),
+                                                    line.trim().on_red().white().bold()
+                                                );
+
                                                 // Add contextual suggestions based on error type
                                                 match category.as_ref() {
                                                     "File Not Found" => {
-                                                        if line.contains("README") || line.contains("readme") {
+                                                        if line.contains("README")
+                                                            || line.contains("readme")
+                                                        {
                                                             println!("  {} Suggestion: Check file case sensitivity (README.md vs readme.md)", "💡".yellow());
                                                         } else if line.contains("package.json") {
                                                             println!("  {} Suggestion: Run 'npm install' to ensure dependencies are installed", "💡".yellow());
                                                         } else {
                                                             println!("  {} Suggestion: Verify file exists and path is correct", "💡".yellow());
                                                         }
-                                                    },
+                                                    }
                                                     "Missing Module" | "Missing Dependency" => {
                                                         println!("  {} Suggestion: Run 'npm install' or check package.json dependencies", "💡".yellow());
-                                                    },
+                                                    }
                                                     "TypeScript Error" => {
                                                         println!("  {} Suggestion: Run 'npm run typecheck' locally to see full type errors", "💡".yellow());
-                                                    },
+                                                    }
                                                     "Lint Error" => {
                                                         println!("  {} Suggestion: Run 'npm run lint -- --fix' to auto-fix some issues", "💡".yellow());
-                                                    },
+                                                    }
                                                     "Test Failure" | "Test Suite Failure" => {
                                                         println!("  {} Suggestion: Run tests locally with '--verbose' for more details", "💡".yellow());
-                                                    },
+                                                    }
                                                     "Out of Memory" => {
                                                         println!("  {} Suggestion: Increase Node memory: NODE_OPTIONS='--max-old-space-size=4096'", "💡".yellow());
-                                                    },
+                                                    }
                                                     "NPM Error" | "Yarn Error" => {
                                                         println!("  {} Suggestion: Clear cache (npm cache clean --force) and reinstall", "💡".yellow());
-                                                    },
+                                                    }
                                                     _ => {}
                                                 }
                                             }
                                         } else {
-                                            println!("  {}", "No specific error patterns detected".yellow());
+                                            println!(
+                                                "  {}",
+                                                "No specific error patterns detected".yellow()
+                                            );
                                         }
-                                        
+
                                         // Always show last 50 lines
                                         let show_lines = 50;
                                         let lines: Vec<_> = filtered_logs.lines().collect();
-                                        let start = if lines.len() > show_lines { lines.len() - show_lines } else { 0 };
-                                        
-                                        println!("\n  {}", format!("=== LAST {} LINES (BUILD EXIT ZONE) ===", show_lines).yellow().bold());
+                                        let start = if lines.len() > show_lines {
+                                            lines.len() - show_lines
+                                        } else {
+                                            0
+                                        };
+
+                                        println!(
+                                            "\n  {}",
+                                            format!(
+                                                "=== LAST {} LINES (BUILD EXIT ZONE) ===",
+                                                show_lines
+                                            )
+                                            .yellow()
+                                            .bold()
+                                        );
                                         for (i, line) in lines.iter().skip(start).enumerate() {
                                             let line_num = start + i + 1;
                                             let trimmed = line.trim();
-                                            
+
                                             // Check if this line was identified as an error in smart detection
-                                            let is_detected_error = error_line_numbers.contains(&line_num);
-                                            
+                                            let is_detected_error =
+                                                error_line_numbers.contains(&line_num);
+
                                             // Highlight error-like lines with enhanced visibility
                                             if is_detected_error {
                                                 // Lines detected by smart detection get special highlighting
-                                                println!("{:5} {} {}", 
+                                                println!(
+                                                    "{:5} {} {}",
                                                     format!("{}", line_num).bright_red().bold(),
                                                     "►".bright_red().bold(),
-                                                    trimmed.on_red().white().bold());
-                                            } else if trimmed.to_lowercase().contains("error") || 
-                                               trimmed.to_lowercase().contains("failed") ||
-                                               trimmed.contains("✗") ||
-                                               trimmed.contains("FAIL") {
-                                                println!("{:5} │ {}", line_num, trimmed.red().bold());
+                                                    trimmed.on_red().white().bold()
+                                                );
+                                            } else if trimmed.to_lowercase().contains("error")
+                                                || trimmed.to_lowercase().contains("failed")
+                                                || trimmed.contains("✗")
+                                                || trimmed.contains("FAIL")
+                                            {
+                                                println!(
+                                                    "{:5} │ {}",
+                                                    line_num,
+                                                    trimmed.red().bold()
+                                                );
                                             } else if trimmed.to_lowercase().contains("warn") {
                                                 println!("{:5} │ {}", line_num, trimmed.yellow());
                                             } else {
                                                 println!("{:5} │ {}", line_num, trimmed.dimmed());
                                             }
                                         }
-                                        
+
                                         // Help text for next steps
-                                        println!("\n  {}", "=== DIDN'T FIND YOUR ERROR? ===".cyan().bold());
-                                        println!("  {}", "• Use --full to see complete logs".cyan());
-                                        println!("  {}", "• Use --tail 100 to see more context".cyan());
-                                        println!("  {}", format!("• Full logs saved at: {}", auto_save_path).cyan());
+                                        println!(
+                                            "\n  {}",
+                                            "=== DIDN'T FIND YOUR ERROR? ===".cyan().bold()
+                                        );
+                                        println!(
+                                            "  {}",
+                                            "• Use --full to see complete logs".cyan()
+                                        );
+                                        println!(
+                                            "  {}",
+                                            "• Use --tail 100 to see more context".cyan()
+                                        );
+                                        println!(
+                                            "  {}",
+                                            format!("• Full logs saved at: {}", auto_save_path)
+                                                .cyan()
+                                        );
                                         println!("  {}", "• For AI: If error not found above, rerun with --full flag".cyan().bold());
                                     }
-                                },
+                                }
                                 Err(e) => print_error(&format!("  Failed to fetch logs: {}", e)),
                             }
                         } else {
@@ -599,61 +737,68 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
     } else {
         print_success("No failed steps found");
     }
-    
+
     // Add timing analysis
     print_header("Timing Analysis");
     let mut step_timings: Vec<(&str, u64)> = Vec::new();
     let mut total_time = 0u64;
-    
+
     for step in &build.steps {
-        let step_time: u64 = step.actions.iter()
-            .filter_map(|a| a.run_time_millis)
-            .sum();
+        let step_time: u64 = step.actions.iter().filter_map(|a| a.run_time_millis).sum();
         if step_time > 0 {
             step_timings.push((&step.name, step_time));
             total_time += step_time;
         }
     }
-    
+
     // Sort by duration (longest first)
     step_timings.sort_by(|a, b| b.1.cmp(&a.1));
-    
+
     if !step_timings.is_empty() {
         println!("Total build time: {}", format_duration(total_time));
         println!("\nSlowest steps:");
         for (i, (name, duration)) in step_timings.iter().take(5).enumerate() {
             let percentage = (*duration as f64 / total_time as f64 * 100.0) as u32;
             let duration_str = format_duration(*duration);
-            
+
             // Color code based on duration
-            let formatted = if *duration > 60000 { // > 1 minute
+            let formatted = if *duration > 60000 {
+                // > 1 minute
                 format!("{}. {} - {} ({}%)", i + 1, name, duration_str, percentage).red()
-            } else if *duration > 30000 { // > 30 seconds
+            } else if *duration > 30000 {
+                // > 30 seconds
                 format!("{}. {} - {} ({}%)", i + 1, name, duration_str, percentage).yellow()
             } else {
                 format!("{}. {} - {} ({}%)", i + 1, name, duration_str, percentage).green()
             };
             println!("  {}", formatted);
         }
-        
+
         // Identify bottlenecks
         if let Some((slowest_name, slowest_time)) = step_timings.first() {
             let percentage = (*slowest_time as f64 / total_time as f64 * 100.0) as u32;
             if percentage > 50 {
-                println!("\n{} Bottleneck detected: '{}' takes {}% of total time", 
-                    "⚠".yellow(), slowest_name, percentage);
+                println!(
+                    "\n{} Bottleneck detected: '{}' takes {}% of total time",
+                    "⚠".yellow(),
+                    slowest_name,
+                    percentage
+                );
                 println!("  Consider optimizing or parallelizing this step");
             }
         }
     } else {
         println!("No timing data available for this build");
     }
-    
+
     print_header("Quick Actions");
     println!("• Rerun: {}", format!("{}/retry", url).blue().underline());
     println!("• SSH Debug: Click 'Rerun' → 'Rerun job with SSH' in CircleCI UI");
-    println!("• View artifacts: {}", format!("{}/artifacts", url).blue().underline());
-    
+    println!(
+        "• View artifacts: {}",
+        format!("{}/artifacts", url).blue().underline()
+    );
+
     Ok(())
 }
 
@@ -706,14 +851,15 @@ async fn analyze_build(url: &str, full_logs: bool, output_file: Option<String>, 
 /// * [`analyze_build`] - Analyze specific failed builds from PR checks
 async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()> {
     print_header("Analyzing GitHub PR");
-    
+
     // Check if gh CLI is available
-    let gh_check = std::process::Command::new("which")
-        .arg("gh")
-        .output();
-    
+    let gh_check = std::process::Command::new("which").arg("gh").output();
+
     if gh_check.is_err() || !gh_check.unwrap().status.success() {
-        eprintln!("{}", "Error: GitHub CLI (gh) is not installed or not in PATH".red());
+        eprintln!(
+            "{}",
+            "Error: GitHub CLI (gh) is not installed or not in PATH".red()
+        );
         eprintln!("\nTo use the 'pr' command, you need to install GitHub CLI:");
         eprintln!("  • macOS: brew install gh");
         eprintln!("  • Linux: See https://cli.github.com/");
@@ -722,13 +868,15 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
         eprintln!("\nNote: The 'build' command works without GitHub CLI");
         bail!("GitHub CLI (gh) is required for PR analysis");
     }
-    
+
     // Determine PR number - auto-detect if not provided
     let pr_number = if let Some(input) = pr_input {
         // Parse PR number from URL or use directly
         if input.contains("github.com") {
             // Extract from URL like https://github.com/org/repo/pull/123
-            input.split('/').last()
+            input
+                .split('/')
+                .last()
                 .context("Invalid PR URL")?
                 .to_string()
         } else {
@@ -741,25 +889,32 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
             .args(&["pr", "view", "--json", "number", "-q", ".number"])
             .output()
             .context("Failed to run 'gh pr view'. Is GitHub CLI installed and authenticated?")?;
-        
+
         let pr_num = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if pr_num.is_empty() {
             bail!("No PR found for current branch. Create a PR first or specify PR number explicitly.");
         }
         pr_num
     };
-    
+
     print_info(&format!("PR Number: {}", pr_number));
-    
+
     // Determine repository
     let repository = if let Some(r) = repo {
         r
     } else {
         // Try to get from current directory using gh
         let output = std::process::Command::new("gh")
-            .args(&["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .args(&[
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "-q",
+                ".nameWithOwner",
+            ])
             .output();
-        
+
         match output {
             Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
             Err(_) => {
@@ -767,21 +922,21 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
             }
         }
     };
-    
+
     if repository.is_empty() {
         bail!("Could not determine repository. Please specify with --repo org/repo");
     }
-    
+
     print_info(&format!("Repository: {}", repository));
-    
+
     // Get PR checks using gh CLI
     println!("\n{}", "Fetching PR status checks...".dimmed());
-    
+
     let checks_output = std::process::Command::new("gh")
         .args(&["pr", "checks", &pr_number, "--repo", &repository])
         .output()
         .context("Failed to run 'gh pr checks'. Is GitHub CLI installed and authenticated?")?;
-    
+
     // gh pr checks returns non-zero when there are failed checks, but still outputs data
     let checks = if !checks_output.stdout.is_empty() {
         String::from_utf8_lossy(&checks_output.stdout)
@@ -791,13 +946,13 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
     } else {
         bail!("No output from gh pr checks command");
     };
-    
+
     print_header("PR Status Checks");
-    
+
     // Parse and display CircleCI-specific checks
     let mut circleci_checks = Vec::new();
     let mut failed_checks = Vec::new();
-    
+
     for line in checks.lines() {
         if line.contains("circleci") || line.contains("CircleCI") {
             circleci_checks.push(line);
@@ -806,7 +961,7 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
             }
         }
     }
-    
+
     if circleci_checks.is_empty() {
         println!("{}", "No CircleCI checks found on this PR".yellow());
         println!("\nAll checks:");
@@ -814,7 +969,7 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
     } else {
         println!("Found {} CircleCI check(s):", circleci_checks.len());
         println!();
-        
+
         for check in &circleci_checks {
             if check.contains("fail") || check.contains("✗") {
                 println!("{}", check.red());
@@ -826,42 +981,58 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
                 println!("{}", check);
             }
         }
-        
+
         if !failed_checks.is_empty() {
             print_header("Failed CircleCI Checks");
             println!("{}", "Extract URLs from failed checks to debug:".cyan());
-            
+
             // Try to extract CircleCI URLs from the output
             let url_regex = Regex::new(r"https://circleci\.com/gh/[^\s]+/\d+")?;
             for check in &failed_checks {
                 if let Some(url_match) = url_regex.find(check) {
                     let url = url_match.as_str();
-                    println!("\n{} {}", "•".red(), check.split('\t').next().unwrap_or("Unknown check").red());
+                    println!(
+                        "\n{} {}",
+                        "•".red(),
+                        check.split('\t').next().unwrap_or("Unknown check").red()
+                    );
                     println!("  Debug with: {}", format!("cdb build {}", url).cyan());
                 }
             }
         }
     }
-    
+
     // Also show PR details
     println!();
     print_header("PR Details");
-    
+
     let pr_details = std::process::Command::new("gh")
-        .args(&["pr", "view", &pr_number, "--repo", &repository, "--json", "state,title,author,url"])
+        .args(&[
+            "pr",
+            "view",
+            &pr_number,
+            "--repo",
+            &repository,
+            "--json",
+            "state,title,author,url",
+        ])
         .output();
-    
+
     if let Ok(output) = pr_details {
         if output.status.success() {
             let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-            
+
             if let Some(title) = json.get("title").and_then(|v| v.as_str()) {
                 print_info(&format!("Title: {}", title));
             }
             if let Some(state) = json.get("state").and_then(|v| v.as_str()) {
                 print_info(&format!("State: {}", state));
             }
-            if let Some(author) = json.get("author").and_then(|v| v.get("login")).and_then(|v| v.as_str()) {
+            if let Some(author) = json
+                .get("author")
+                .and_then(|v| v.get("login"))
+                .and_then(|v| v.as_str())
+            {
                 print_info(&format!("Author: {}", author));
             }
             if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
@@ -869,7 +1040,7 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -896,15 +1067,22 @@ async fn analyze_pr(pr_input: Option<String>, repo: Option<String>) -> Result<()
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     match cli.command {
-        Commands::Build { url, full, output, tail, filter, no_fetch } => {
+        Commands::Build {
+            url,
+            full,
+            output,
+            tail,
+            filter,
+            no_fetch,
+        } => {
             analyze_build(&url, full, output, tail, filter, no_fetch).await?;
-        },
+        }
         Commands::Pr { pr, repo } => {
             analyze_pr(pr, repo).await?;
-        },
+        }
     }
-    
+
     Ok(())
 }
